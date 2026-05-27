@@ -1,0 +1,6 @@
+[workspace]
+members = ["campaign", "token-bridge", "common"]
+resolver = "2"
+
+[workspace.dependencies]
+soroban-sdk = { version = "26.0.1" }
