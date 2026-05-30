@@ -3,8 +3,8 @@
 pub mod storage;
 pub mod types;
 
-use soroban_sdk::{contract, contractimpl, Address, Env, Vec};
-use types::{CampaignData, CampaignStatus, Error, MilestoneData, MilestoneStatus, StellarAsset, CampaignEvent, AssetInfo};
+use soroban_sdk::{contract, contractimpl, token, Address, Env, Vec};
+use types::{AssetInfo, CampaignData, CampaignStatus, Error, MilestoneData, MilestoneStatus, StellarAsset, CampaignEvent};
 use storage::{get_campaign, set_campaign, set_milestone};
 
 pub const VERSION: u32 = 1;
@@ -39,6 +39,7 @@ impl CampaignContract {
         end_time: u64,
         accepted_assets: Vec<StellarAsset>,
         milestones: Vec<MilestoneData>,
+        min_donation_amount: i128,
     ) -> Result<(), Error> {
         // Authorization check: creator must authorize this call
         creator.require_auth();
@@ -85,6 +86,7 @@ impl CampaignContract {
             status: CampaignStatus::Active,
             accepted_assets: accepted_assets.clone(),
             milestone_count,
+            min_donation_amount,
         };
 
         set_campaign(&env, &campaign);
@@ -107,19 +109,19 @@ impl CampaignContract {
         Ok(())
     }
 
-    /// Issue #193 – Donate to the campaign, enforcing the campaign deadline.
+    /// Issue #192 – Donate to the campaign, enforcing the minimum donation amount.
     ///
-    /// Panics with `Error::CampaignEnded` if `env.ledger().timestamp() > campaign.end_time`.
-    /// The check is atomic with the state update to prevent race conditions.
+    /// Panics with `Error::DonationTooSmall` if `amount < min_donation_amount` (when min > 0).
+    /// Set `min_donation_amount` to 0 during `initialize` to disable enforcement.
     pub fn donate(env: Env, donor: Address, amount: i128, _asset: AssetInfo) {
         donor.require_auth();
 
         let mut campaign: CampaignData = get_campaign(&env)
             .unwrap_or_else(|| panic_with_error(&env, Error::AlreadyInitialized));
 
-        // Issue #193 – deadline enforcement: reject donations after end_time
-        if env.ledger().timestamp() > campaign.end_time {
-            panic_with_error(&env, Error::CampaignEnded);
+        // Issue #192 – enforce minimum donation amount
+        if campaign.min_donation_amount > 0 && amount < campaign.min_donation_amount {
+            panic_with_error(&env, Error::DonationTooSmall);
         }
 
         campaign.raised_amount += amount;
@@ -194,6 +196,7 @@ fn panic_with_error(env: &Env, error: Error) -> ! {
         Error::CampaignNotActive => "CampaignNotActive",
         Error::CampaignEnded => "CampaignEnded",
         Error::GoalNotReached => "GoalNotReached",
+        Error::DonationTooSmall => "DonationTooSmall",
     };
     env.panic_with_error(soroban_sdk::Symbol::new(env, error_name))
 }
