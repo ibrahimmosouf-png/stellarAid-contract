@@ -13,7 +13,7 @@ pub mod multi_asset_release;
 pub mod views;
 
 use types::{CampaignData, CampaignInitializedEvent, CampaignStatus, CampaignStatusResponse, DonorRecord, Error, MilestoneData, MilestoneStatus, StellarAsset, AssetInfo};
-use soroban_sdk::{contract, contractimpl, Address, Env, String, Vec, BytesN};
+use soroban_sdk::{contract, contractimpl, token, Address, Env, String, Vec, BytesN};
 use types::{CampaignData, CampaignInitializedEvent, CampaignStatus, DonorRecord, Error, MilestoneData, MilestoneStatus, StellarAsset, AssetInfo};
 use storage::{get_campaign, set_campaign, get_milestone, set_milestone, get_donor, set_donor, get_total_raised as storage_get_total_raised, storage_set_total_raised, increment_donor_asset_donation, get_donor_asset_donation, is_frozen, set_frozen};
 
@@ -587,6 +587,35 @@ fn get_token_address_for_asset(
                 .unwrap_or_else(|| panic_with_error(env, Error::AssetNotAccepted))
         }
     }
+}
+
+/// Query the contract's balance for any accepted asset
+/// Returns 0 if no balance or trustline not set
+/// Uses token::Client::new for SEP-41 tokens
+fn contract_balance(env: &Env, asset: &AssetInfo) -> i128 {
+    // Get the token address for the asset
+    let token_address = match asset {
+        AssetInfo::Stellar(addr) => addr.clone(),
+        AssetInfo::Native => {
+            // For Native XLM, find its wrapped token address from accepted_assets
+            let campaign = get_campaign(env);
+            let xlm_code = soroban_sdk::String::from_str(env, "XLM");
+            campaign
+                .accepted_assets
+                .iter()
+                .find(|a| a.asset_code == xlm_code)
+                .and_then(|a| a.issuer.clone())
+                .unwrap_or_else(|| return 0)
+        }
+    };
+
+    // Create token client and query balance - if any panic occurs (like trustline not set), return 0
+    let result = std::panic::catch_unwind(|| {
+        let token_client = token::Client::new(env, &token_address);
+        token_client.balance(&env.current_contract_address())
+    });
+    
+    result.unwrap_or(0)
 }
 
 fn validate_assets(env: &Env, assets: &Vec<StellarAsset>) -> Result<(), Error> {
