@@ -416,8 +416,8 @@ pub struct DonorRecord {
     pub donor: Address,
     /// Cumulative donated amount across all donations (base units).
     pub total_donated: i128,
-    /// Asset used for the most recent donation.
-    pub asset: AssetInfo,
+    /// Asset-specific breakdown of total donations.
+    pub contributions: Vec<(AssetInfo, i128)>,
     /// Ledger timestamp of the most recent donation.
     pub last_donation_time: u64,
     /// Ledger number of the most recent donation.
@@ -430,11 +430,11 @@ pub struct DonorRecord {
 
 impl DonorRecord {
     /// Returns a fresh zeroed record for a first-time donor.
-    pub fn new_for(donor: Address, asset: AssetInfo) -> Self {
+    pub fn new_for(env: &Env, donor: Address) -> Self {
         Self {
             donor,
             total_donated: 0,
-            asset,
+            contributions: Vec::new(env),
             last_donation_time: 0,
             last_donation_ledger: 0,
             donation_count: 0,
@@ -442,15 +442,29 @@ impl DonorRecord {
         }
     }
 
-    /// Apply a new donation to this record.  Returns an error string (for
-    /// debug builds) rather than panicking so the call site can choose how
-    /// to surface it.
-    pub fn apply_donation(&mut self, amount: i128, time: u64, ledger: u32, asset: AssetInfo) {
+    /// Apply a new donation to this record.
+    pub fn apply_donation(&mut self, env: &Env, amount: i128, time: u64, ledger: u32, asset: AssetInfo) {
         self.total_donated = self.total_donated.saturating_add(amount);
         self.last_donation_time = time;
         self.last_donation_ledger = ledger;
         self.donation_count = self.donation_count.saturating_add(1);
-        self.asset = asset;
+
+        // Update or append the contribution for the given asset
+        let mut asset_found = false;
+        for i in 0..self.contributions.len() {
+            if let Some(mut contribution) = self.contributions.get(i) {
+                if contribution.0 == asset {
+                    contribution.1 = contribution.1.saturating_add(amount);
+                    self.contributions.set(i, contribution);
+                    asset_found = true;
+                    break;
+                }
+            }
+        }
+
+        if !asset_found {
+            self.contributions.push_back((asset, amount));
+        }
     }
 }
 
@@ -517,5 +531,3 @@ pub struct RefundProcessedEvent {
     pub asset: AssetInfo,
     pub ledger: u32,
 }
-
-

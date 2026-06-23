@@ -184,23 +184,9 @@ impl CampaignContract {
         storage_increment_asset_raised(&env, &asset_address, amount);
 
         // Update donor record
-        let mut donor_record = get_donor(&env, &donor).unwrap_or(DonorRecord {
-            donor: donor.clone(),
-            total_donated: 0,
-            asset: asset.clone(),
-            last_donation_time: 0,
-            last_donation_ledger: 0,
-            donation_count: 0,
-            refund_claimed: false,
-        });
-        donor_record.total_donated = donor_record
-            .total_donated
-            .checked_add(amount)
-            .unwrap_or_else(|| panic_with_error(&env, Error::Overflow));
-        donor_record.asset = asset.clone();
-        donor_record.last_donation_time = env.ledger().timestamp();
-        donor_record.last_donation_ledger = env.ledger().sequence();
-        donor_record.donation_count = donor_record.donation_count.saturating_add(1);
+        let mut donor_record = get_donor(&env, &donor)
+            .unwrap_or_else(|| DonorRecord::new_for(&env, donor.clone()));
+        donor_record.apply_donation(&env, amount, env.ledger().timestamp(), env.ledger().sequence(), asset.clone());
         set_donor(&env, &donor, &donor_record);
 
         // Issue #195 – milestone unlock check
@@ -254,6 +240,14 @@ impl CampaignContract {
     /// No auth required. Returns None if the address has never donated.
     pub fn get_donor_record(env: Env, donor: Address) -> Option<DonorRecord> {
         get_donor(&env, &donor)
+    }
+
+    /// Returns the asset-specific breakdown of a donor's contributions.
+    /// No auth required. Returns an empty Vec if the address has never donated.
+    pub fn get_donor_asset_breakdown(env: Env, donor: Address) -> Vec<(AssetInfo, i128)> {
+        get_donor(&env, &donor)
+            .map(|record| record.contributions)
+            .unwrap_or_else(|| Vec::new(&env))
     }
 
     pub fn hello(env: Env) -> soroban_sdk::Symbol {
@@ -405,36 +399,31 @@ impl CampaignContract {
         set_donor(&env, &donor, &donor_record);
 
         // For each asset the donor contributed to, calculate and transfer refund
-        for asset in campaign.accepted_assets.iter() {
-            let asset_address = match &asset.issuer {
-                Some(addr) => addr.clone(),
-                None => continue, // Skip assets without an issuer (native XLM handled separately)
-            };
+        for i in 0..donor_record.contributions.len() {
+            if let Some((asset, donor_asset_amount)) = donor_record.contributions.get(i) {
+                if donor_asset_amount > 0 {
+                    // Calculate pro-rata refund: (donor_amount * refund_numerator) / refund_denominator
+                    let refund_amount = (donor_asset_amount * refund_numerator) / refund_denominator;
 
-            // Get amount donor contributed in this asset
-            let donor_asset_amount = get_donor_asset_donation(&env, &donor, &asset_address);
+                    if refund_amount > 0 {
+                        let asset_address = get_token_address_for_asset(&env, &asset, &campaign);
+                        // Issue #244 – Verify contract balance before transfer
+                        use soroban_sdk::token;
+                        let token_client = token::Client::new(&env, &asset_address);
+                        let contract_balance = token_client.balance(&env.current_contract_address());
+                        if contract_balance < refund_amount {
+                            panic_with_error(&env, Error::InsufficientContractBalance);
+                        }
 
-            if donor_asset_amount > 0 {
-                // Calculate pro-rata refund: (donor_amount * refund_numerator) / refund_denominator
-                let refund_amount = (donor_asset_amount * refund_numerator) / refund_denominator;
+                        // Transfer refund to donor
+                        token_client.transfer(&env.current_contract_address(), &donor, &refund_amount);
 
-                if refund_amount > 0 {
-                    // Issue #244 – Verify contract balance before transfer
-                    use soroban_sdk::token;
-                    let token_client = token::Client::new(&env, &asset_address);
-                    let contract_balance = token_client.balance(&env.current_contract_address());
-                    if contract_balance < refund_amount {
-                        panic_with_error(&env, Error::InsufficientContractBalance);
+                        // Emit event for this asset's refund
+                        env.events().publish(
+                            ("campaign", "asset_refund"),
+                            (donor.clone(), asset_address, refund_amount),
+                        );
                     }
-
-                    // Transfer refund to donor
-                    token_client.transfer(&env.current_contract_address(), &donor, &refund_amount);
-
-                    // Emit event for this asset's refund
-                    env.events().publish(
-                        ("campaign", "asset_refund"),
-                        (donor.clone(), asset_address, refund_amount),
-                    );
                 }
             }
         }
