@@ -72,29 +72,37 @@ pub fn release_milestone(env: &Env, milestone_index: u32, recipient: Address) {
 
     let timestamp = env.ledger().timestamp();
 
+    let total_raised = crate::storage::storage_get_total_raised(env);
+
     // Transfer each accepted asset proportionally
     for asset in campaign.accepted_assets.iter() {
         if let Some(issuer) = asset.issuer.clone() {
-            let token_client = token::Client::new(env, &issuer);
+            let asset_raised = crate::storage::storage_get_asset_raised(env, &issuer);
+            if asset_raised == 0 {
+                continue; // Skip assets with no funds
+            }
 
-            // Issue #244 – Query actual contract balance for verification
-            let asset_balance = token_client.balance(&env.current_contract_address());
+            // Proportional release: (asset_raised / total_raised) * milestone_release
+            let proportional_amount = (asset_raised as u128 * release_amount as u128 / total_raised as u128) as i128;
 
-            if asset_balance > 0 && release_amount > 0 {
-                // Issue #244 – Verify contract balance is sufficient BEFORE transfer
-                if asset_balance < release_amount {
+            if proportional_amount > 0 {
+                let token_client = token::Client::new(env, &issuer);
+                let contract_balance = token_client.balance(&env.current_contract_address());
+
+                if contract_balance < proportional_amount {
                     panic_with_error!(env, Error::InsufficientContractBalance);
                 }
 
-                // Clamp to available balance (should never be needed due to check above)
-                let transfer_amount = release_amount.min(asset_balance);
-
-                token_client.transfer(&env.current_contract_address(), &recipient, &transfer_amount);
+                token_client.transfer(
+                    &env.current_contract_address(),
+                    &recipient,
+                    &proportional_amount,
+                );
 
                 event::milestone_released(
                     env,
                     milestone_index,
-                    transfer_amount,
+                    proportional_amount,
                     asset.asset_code.clone(),
                     &recipient,
                     timestamp,
