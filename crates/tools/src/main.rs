@@ -36,6 +36,9 @@ mod withdrawal_audit;
 // Issue #139 – withdrawal limits
 mod withdrawal_limits;
 
+// Security tests
+mod security_tests;
+
 fn main() -> Result<()> {
     dotenv::dotenv().ok();
 
@@ -53,6 +56,7 @@ fn main() -> Result<()> {
         println!("  account    - Manage Stellar accounts");
         println!("  signing    - Build transaction signing requests");
         println!("  response   - Handle signed transaction responses");
+        println!("  run-security-tests - Run the security test suite");
         return Ok(());
     }
 
@@ -69,6 +73,7 @@ fn main() -> Result<()> {
         "keypair" => handle_keypair(&args[2..]),
         "signing" => handle_signing(&args[2..]),
         "response" => handle_response(&args[2..]),
+        "run-security-tests" => security_tests::SecurityTestSuite::run_all_tests().map(|_| ()),
         _ => {
             println!("Unknown command: {}", args[1]);
             Ok(())
@@ -830,4 +835,3 @@ fn handle_response(args: &[String]) -> Result<()> {
 
     Ok(())
 }
-
