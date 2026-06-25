@@ -98,6 +98,11 @@ impl CampaignFactory {
         env.storage()
             .instance()
             .set(&DataKey::DeploymentFee, &fee);
+
+        env.events().publish(
+            (symbol_short!("fee_set"),),
+            fee,
+        );
     }
 
     /// Returns the current deployment fee in stroops.
