@@ -76,6 +76,11 @@ impl CampaignFactory {
         env.storage()
             .instance()
             .set(&DataKey::CampaignWasmHash, &new_hash);
+
+        env.events().publish(
+            (symbol_short!("wasm_upd"),),
+            new_hash,
+        );
     }
 
     /// Returns the currently stored campaign WASM hash.
@@ -93,6 +98,11 @@ impl CampaignFactory {
         env.storage()
             .instance()
             .set(&DataKey::DeploymentFee, &fee);
+
+        env.events().publish(
+            (symbol_short!("fee_set"),),
+            fee,
+        );
     }
 
     /// Returns the current deployment fee in stroops.
@@ -232,6 +242,21 @@ impl CampaignFactory {
             .instance()
             .get(&DataKey::Count)
             .unwrap_or(0)
+    }
+
+    /// Set the treasury address that receives deployment fees.
+    ///
+    /// Admin only.
+    pub fn set_treasury(env: Env, new_treasury: Address) {
+        Self::require_admin(&env);
+        env.storage()
+            .instance()
+            .set(&DataKey::Treasury, &new_treasury);
+
+        env.events().publish(
+            (symbol_short!("treasury_s"),),
+            new_treasury,
+        );
     }
 
     // ── Internal ──────────────────────────────────────────────────────────────
