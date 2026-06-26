@@ -10,21 +10,28 @@ elif [ "$NETWORK" = "mainnet" ]; then
   RPC_URL="https://soroban.stellar.org"
   PASSPHRASE="Public Global Stellar Network ; September 2015"
 else
-  echo "Unknown network: $NETWORK"
+  echo "Unknown network: $NETWORK. Use testnet or mainnet."
   exit 1
 fi
 
-echo "Deploying to $NETWORK..."
+echo "Configuring Soroban network: $NETWORK"
+soroban network add "$NETWORK" \
+  --rpc-url "$RPC_URL" \
+  --network-passphrase "$PASSPHRASE" 2>/dev/null || true
 
+echo "Building contracts..."
 cargo build --target wasm32-unknown-unknown --release
 
-for contract in donation withdrawal campaign; do
+CONTRACTS=("donation" "withdrawal" "campaign")
+for contract in "${CONTRACTS[@]}"; do
+  WASM="target/wasm32-unknown-unknown/release/${contract}.wasm"
   echo "Deploying $contract..."
-  soroban contract deploy \
-    --wasm target/wasm32-unknown-unknown/release/${contract}.wasm \
+  CONTRACT_ID=$(soroban contract deploy \
+    --wasm "$WASM" \
     --network "$NETWORK" \
     --rpc-url "$RPC_URL" \
-    --network-passphrase "$PASSPHRASE"
+    --network-passphrase "$PASSPHRASE")
+  echo "$contract contract ID: $CONTRACT_ID"
 done
 
-echo "Deployment complete."
+echo "Deployment to $NETWORK complete."
