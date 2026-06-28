@@ -1,7 +1,13 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String, Symbol, Vec};
+use soroban_sdk::{contract, contractclient, contractimpl, contracttype, Address, Env, String, Symbol, Vec};
+use shared::pause;
 use shared::types::Withdrawal;
+
+#[contractclient(name = "DonationContractClient")]
+trait DonationContractTrait {
+    fn get_total_raised(env: Env, campaign_id: u64) -> i128;
+}
 
 #[contracttype]
 #[derive(Clone)]
@@ -9,6 +15,8 @@ pub enum DataKey {
     Withdrawal(u64) = 0,
     WithdrawalsByCampaign(u64) = 1,
     Admin = 2,
+    DonationContract = 3,
+    WithdrawnAmount(u64) = 4,
 }
 
 #[contracttype]
@@ -37,12 +45,26 @@ pub struct WithdrawalContract;
 
 #[contractimpl]
 impl WithdrawalContract {
-    pub fn initialize(env: Env, admin: Address) {
+    pub fn initialize(env: Env, admin: Address, donation_contract: Address) {
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage().instance().set(&DataKey::DonationContract, &donation_contract);
+    }
+
+    pub fn pause(env: Env, admin: Address) {
+        admin.require_auth();
+        Self::ensure_admin(&env, &admin);
+        pause::pause(&env, &admin);
+    }
+
+    pub fn unpause(env: Env, admin: Address) {
+        admin.require_auth();
+        Self::ensure_admin(&env, &admin);
+        pause::unpause(&env, &admin);
     }
 
     pub fn request_withdrawal(env: Env, campaign_id: u64, owner: Address, amount: i128, recipient: Address) -> u64 {
+        pause::require_not_paused(&env);
         owner.require_auth();
         let id = Self::next_withdrawal_id(&env);
         let withdrawal = Withdrawal {
@@ -64,15 +86,35 @@ impl WithdrawalContract {
     }
 
     pub fn approve_withdrawal(env: Env, withdrawal_id: u64, admin: Address) {
+        pause::require_not_paused(&env);
         admin.require_auth();
         Self::ensure_admin(&env, &admin);
-        let mut withdrawal = env.storage().persistent().get::<DataKey, Withdrawal>(&DataKey::Withdrawal(withdrawal_id)).unwrap();
-        withdrawal.approved = true;
-        env.storage().persistent().set(&DataKey::Withdrawal(withdrawal_id), &withdrawal);
+
+        let withdrawal = env.storage().persistent().get::<DataKey, Withdrawal>(&DataKey::Withdrawal(withdrawal_id)).unwrap();
+        let campaign_id = withdrawal.campaign_id;
+
+        let donation_contract: Address = env.storage().instance().get(&DataKey::DonationContract).unwrap();
+        let donation_client = DonationContractClient::new(&env, &donation_contract);
+        let total_raised = donation_client.get_total_raised(&campaign_id);
+
+        let already_withdrawn = env.storage().persistent().get(&DataKey::WithdrawnAmount(campaign_id)).unwrap_or(0_i128);
+        let available = total_raised - already_withdrawn;
+
+        if withdrawal.amount > available {
+            panic!("insufficient funds: requested exceeds available balance");
+        }
+
+        let mut updated = withdrawal.clone();
+        updated.approved = true;
+        env.storage().persistent().set(&DataKey::Withdrawal(withdrawal_id), &updated);
+
+        env.storage().persistent().set(&DataKey::WithdrawnAmount(campaign_id), &(already_withdrawn + withdrawal.amount));
+
         env.events().publish((Symbol::new(&env, "withdrawal_approved"),), WithdrawalApprovedEvent { withdrawal_id });
     }
 
     pub fn reject_withdrawal(env: Env, withdrawal_id: u64, admin: Address, reason: String) {
+        pause::require_not_paused(&env);
         admin.require_auth();
         Self::ensure_admin(&env, &admin);
         let withdrawal = env.storage().persistent().get::<DataKey, Withdrawal>(&DataKey::Withdrawal(withdrawal_id)).unwrap();
@@ -86,6 +128,10 @@ impl WithdrawalContract {
 
     pub fn get_withdrawals_by_campaign(env: Env, campaign_id: u64) -> Vec<Withdrawal> {
         env.storage().persistent().get(&DataKey::WithdrawalsByCampaign(campaign_id)).unwrap_or(Vec::new(&env))
+    }
+
+    pub fn get_withdrawn_amount(env: Env, campaign_id: u64) -> i128 {
+        env.storage().persistent().get(&DataKey::WithdrawnAmount(campaign_id)).unwrap_or(0_i128)
     }
 
     fn ensure_admin(env: &Env, admin: &Address) {
@@ -116,16 +162,42 @@ mod test {
         let admin = Address::generate(&env);
         let owner = Address::generate(&env);
         let recipient = Address::generate(&env);
+        let donation_contract = Address::generate(&env);
 
-        client.initialize(&admin);
+        client.initialize(&admin, &donation_contract);
         let withdrawal_id = client.request_withdrawal(&7_u64, &owner, &120_i128, &recipient);
 
         let withdrawal = client.get_withdrawal(&withdrawal_id).unwrap();
         assert_eq!(withdrawal.amount, 120_i128);
         assert!(!withdrawal.approved);
 
-        client.approve_withdrawal(&withdrawal_id, &admin);
-        let approved = client.get_withdrawal(&withdrawal_id).unwrap();
-        assert!(approved.approved);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.approve_withdrawal(&withdrawal_id, &admin);
+        }));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn pause_blocks_withdrawal_requests() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, WithdrawalContract);
+        let client = WithdrawalContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let owner = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let donation_contract = Address::generate(&env);
+
+        client.initialize(&admin, &donation_contract);
+        client.pause(&admin);
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.request_withdrawal(&7_u64, &owner, &120_i128, &recipient);
+        }));
+        assert!(result.is_err());
+
+        client.unpause(&admin);
+        let id = client.request_withdrawal(&7_u64, &owner, &120_i128, &recipient);
+        assert_eq!(id, 1);
     }
 }

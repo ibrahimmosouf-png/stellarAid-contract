@@ -1,6 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{contract, contractclient, contractimpl, contracttype, Address, Env, Symbol, Vec};
+use shared::pause;
 use shared::types::Donation;
 
 #[contractclient(name = "CampaignContractClient")]
@@ -11,6 +12,7 @@ trait CampaignContractTrait {
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
+    Admin = 4,
     DonationHistory(Address) = 0,
     CampaignDonations(u64) = 1,
     CampaignRaised(u64) = 2,
@@ -30,11 +32,26 @@ pub struct DonationContract;
 
 #[contractimpl]
 impl DonationContract {
-    pub fn initialize(env: Env, campaign_contract: Address) {
+    pub fn initialize(env: Env, admin: Address, campaign_contract: Address) {
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::CampaignContract, &campaign_contract);
     }
 
+    pub fn pause(env: Env, admin: Address) {
+        admin.require_auth();
+        Self::ensure_admin(&env, &admin);
+        pause::pause(&env, &admin);
+    }
+
+    pub fn unpause(env: Env, admin: Address) {
+        admin.require_auth();
+        Self::ensure_admin(&env, &admin);
+        pause::unpause(&env, &admin);
+    }
+
     pub fn donate(env: Env, donor: Address, campaign_id: u64, amount: i128) {
+        pause::require_not_paused(&env);
         donor.require_auth();
         let mut donations = env.storage().persistent().get(&DataKey::CampaignDonations(campaign_id)).unwrap_or(Vec::new(&env));
         let timestamp = env.ledger().timestamp();
@@ -77,6 +94,13 @@ impl DonationContract {
     pub fn get_donor_history(env: Env, donor: Address) -> Vec<Donation> {
         env.storage().persistent().get(&DataKey::DonationHistory(donor)).unwrap_or(Vec::new(&env))
     }
+
+    fn ensure_admin(env: &Env, admin: &Address) {
+        let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        if stored_admin != *admin {
+            panic!("unauthorized");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -91,9 +115,10 @@ mod test {
         let contract_id = env.register_contract(None, DonationContract);
         let client = DonationContractClient::new(&env, &contract_id);
         let donor = Address::generate(&env);
+        let admin = Address::generate(&env);
         let campaign_contract = Address::generate(&env);
 
-        client.initialize(&campaign_contract);
+        client.initialize(&admin, &campaign_contract);
         client.donate(&donor, &7_u64, &100_i128);
 
         let donations = client.get_donations_for_campaign(&7_u64);
@@ -103,5 +128,28 @@ mod test {
         let history = client.get_donor_history(&donor);
         assert_eq!(history.len(), 1);
         assert_eq!(history.get(0).unwrap().amount, 100_i128);
+    }
+
+    #[test]
+    fn pause_blocks_donations() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, DonationContract);
+        let client = DonationContractClient::new(&env, &contract_id);
+        let donor = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let campaign_contract = Address::generate(&env);
+
+        client.initialize(&admin, &campaign_contract);
+        client.pause(&admin);
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.donate(&donor, &7_u64, &100_i128);
+        }));
+        assert!(result.is_err());
+
+        client.unpause(&admin);
+        client.donate(&donor, &7_u64, &100_i128);
+        assert_eq!(client.get_total_raised(&7_u64), 100_i128);
     }
 }
