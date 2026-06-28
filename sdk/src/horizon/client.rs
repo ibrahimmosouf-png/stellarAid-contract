@@ -73,6 +73,8 @@ pub struct TransactionDetail {
     pub created_at: String,
     pub successful: bool,
     pub envelope_xdr: String,
+    #[serde(default)]
+    pub ledger: Option<u64>,
 }
 
 impl HorizonClient {
