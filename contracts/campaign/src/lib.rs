@@ -30,6 +30,9 @@ pub struct CampaignStatusChangedEvent {
     pub new_status: CampaignStatus,
 }
 
+const MIN_TTL: u32 = 17280; // 1 day in ledgers (assuming 5s ledger time)
+const MAX_TTL: u32 = 6312000; // 1 year in ledgers (assuming 5s ledger time)
+
 #[contract]
 pub struct CampaignContract;
 
@@ -76,6 +79,7 @@ impl CampaignContract {
             deadline,
         };
         env.storage().persistent().set(&DataKey::Campaign(id), &campaign);
+        Self::bump_campaign_ttl(env.clone(), id);
         env.events().publish((Symbol::new(&env, "campaign_registered"),), CampaignRegisteredEvent {
             campaign_id: id,
             owner,
@@ -117,6 +121,7 @@ impl CampaignContract {
             .unwrap();
         campaign.raised += amount;
         env.storage().persistent().set(&DataKey::Campaign(campaign_id), &campaign);
+        Self::bump_campaign_ttl(env.clone(), campaign_id);
     }
 
     /// Approve a campaign, moving it to Active status.
@@ -164,6 +169,12 @@ impl CampaignContract {
         admin.require_auth();
         Self::ensure_admin(&env, &admin);
         env.deployer().update_current_contract_wasm(&new_wasm_hash);
+    }
+
+    /// Bumps the TTL of a campaign to ensure it doesn't expire.
+    pub fn bump_campaign_ttl(env: Env, campaign_id: u64) {
+        let key = DataKey::Campaign(campaign_id);
+        env.storage().persistent().extend_ttl(&key, MIN_TTL, MAX_TTL);
     }
 
     fn ensure_admin(env: &Env, admin: &Address) {
